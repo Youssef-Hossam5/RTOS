@@ -1,0 +1,456 @@
+/*
+
+Free RTOS Embedded System project
+Project Description: Four tasks communicate using queue
+
+
+Ahmed yahya
+Youssef Hossam
+
+
+*/
+
+
+
+
+//-----------------Preprocessor Directives----------------
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include "math.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "queue.h"
+#include "diag/trace.h"
+#include "timers.h"
+
+//--------------suppressing warnings (not necessary)----------------------------
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wmissing-declarations"
+#pragma GCC diagnostic ignored "-Wreturn-type"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#define CCM_RAM __attribute__((section(".ccmram")))
+
+//---------------- Defining Priorities---------------------------
+#define SENDER1_PRIORITY    (tskIDLE_PRIORITY + 1)
+#define SENDER2_PRIORITY    (tskIDLE_PRIORITY + 1)
+#define SENDER3_PRIORITY    (tskIDLE_PRIORITY + 2)
+#define RECEIVER_PRIORITY   (tskIDLE_PRIORITY + 3)
+//The "idle task" is the task that runs when no other tasks are ready to run (lowest priority level in the system)
+
+// -----------------------Global Variables--------------------------------------
+
+QueueHandle_t messageQueue;
+SemaphoreHandle_t Semaphores[4]; // array of semaphore 3 for senders and one for reciever
+TimerHandle_t xTimerHandlerSender_1=NULL;
+TimerHandle_t xTimerHandlerSender_2=NULL;
+TimerHandle_t xTimerHandlerSender_3=NULL;
+TimerHandle_t xTimerHandlerReciever=NULL;
+BaseType_t xTimer1Started = 0;
+BaseType_t xTimer2Started = 0;
+BaseType_t xTimer3Started = 0;
+BaseType_t xTimer4Started = 0;
+TickType_t RandomTime_1 = pdMS_TO_TICKS ( 100 ); //convert a duration in milliseconds to ticks
+TickType_t RandomTime_2 = pdMS_TO_TICKS ( 100 ); //convert a duration in milliseconds to ticks
+TickType_t RandomTime_3 = pdMS_TO_TICKS ( 100 ); //convert a duration in milliseconds to ticks
+const TickType_t RecieverWait = pdMS_TO_TICKS( 100 );
+
+//----------------------Counters-----------------------------------
+
+int BlockedCount_1 =0 ; //counter of blocked messages
+int BlockedCount_2 =0 ;
+int BlockedCount_3 =0 ;
+int TransmittedCount_1 =0 ; //counter of transmitted messages
+int TransmittedCount_2 =0 ;
+int TransmittedCount_3 =0 ;
+int RecieverCount =0 ; //counter of received messages in queue
+
+const int QueueLength =3;
+const int LowerBound[6] = {50, 80, 110, 140, 170, 200};
+const int UpperBound[6] = {150, 200, 250, 300, 350, 400};
+int Iterations = 0; //detect which iteration to get random time
+
+
+
+
+// -------------------------Random Time-----------------------------------------
+
+
+void RandomSample() {
+    srand(time(NULL)); //initialize the random number
+    int Random1, Random2, Random3, difference;
+    double RandomValue1,RandomValue2,RandomValue3;
+    difference = UpperBound[Iterations] - LowerBound[Iterations] +1;
+    RandomValue1 = (double)rand() / RAND_MAX ; //get a random value between 0 and 1
+    RandomValue2 = (double)rand() / RAND_MAX ;
+    RandomValue3 = (double)rand() / RAND_MAX ;
+    Random1 = (int)(RandomValue1*difference) + LowerBound[Iterations]; //get a random value between LowerBound and UpperBound
+    Random2 = (int)(RandomValue2*difference) + LowerBound[Iterations];
+    Random3 = (int)(RandomValue3*difference) + LowerBound[Iterations];
+    RandomTime_1 = pdMS_TO_TICKS ( Random1 ); //convert a duration in milliseconds to ticks
+    RandomTime_2 = pdMS_TO_TICKS ( Random2 ); //convert a duration in milliseconds to ticks
+    RandomTime_3 = pdMS_TO_TICKS ( Random3 ); //convert a duration in milliseconds to ticks
+}
+
+//---------------------------Reset function-------------------------------------
+
+void inti_reset(void)
+{
+
+    //reseting counters
+	BlockedCount_1 =0 ;
+	BlockedCount_2 =0 ;
+	BlockedCount_3 =0 ;
+	TransmittedCount_1 =0 ;
+	TransmittedCount_2 =0 ;
+	TransmittedCount_3 =0 ;
+	RecieverCount =0;
+
+	RandomSample();
+	    xTimerChangePeriod(xTimerHandlerSender_1,pdMS_TO_TICKS(RandomTime_1),NULL );
+	    RandomSample();
+	    xTimerChangePeriod(xTimerHandlerSender_2,pdMS_TO_TICKS(RandomTime_2),NULL );
+	    RandomSample();
+	    xTimerChangePeriod(xTimerHandlerSender_3,pdMS_TO_TICKS(RandomTime_3),NULL );
+
+}
+
+
+
+
+void reset(void)
+{
+	int TransmittedCount_total = TransmittedCount_1 + TransmittedCount_2 + TransmittedCount_3;//calculating total number of messages
+	int  BlockedCount_total = BlockedCount_1 + BlockedCount_2 + BlockedCount_3;
+	                     printf("          Iteration number: %d        \n",Iterations+1);
+	                     printf( "Total Sent Messages: %d,Total blocked Messages: %d\n",
+	    						TransmittedCount_total, BlockedCount_total );
+	    			     printf( "Sender 1 sent messages: %d, blocked messages: %d\n",
+	    			    		 TransmittedCount_1, BlockedCount_1 );
+	    		         printf( "Sender 2 sent messages: %d, blocked messages: %d\n",
+	    		        		 TransmittedCount_2, BlockedCount_2 );
+	    		         printf( "Sender 3 sent messages: %d, blocked messages: %d\n",
+	    				            TransmittedCount_3, BlockedCount_3 );
+	    			     Iterations++;
+	if (Iterations == 6)
+			{
+		 printf("Game Over \r\n");
+	    	xTimerDelete(xTimerHandlerSender_1, NULL); // Destroy the timers
+	    	xTimerDelete(xTimerHandlerSender_2, NULL);
+	        xTimerDelete(xTimerHandlerSender_3, NULL);
+	        xTimerDelete(xTimerHandlerReciever, NULL);
+
+		 vTaskEndScheduler(); // Stop execution
+			}
+
+        // clearing the queue
+      	xQueueReset(messageQueue);
+	    BlockedCount_1 =0 ;
+		BlockedCount_2 =0 ;
+		BlockedCount_3 =0 ;
+		TransmittedCount_1 =0 ;
+		TransmittedCount_2 =0 ;
+		TransmittedCount_3 =0 ;
+		RecieverCount =0;
+
+}
+
+// ----------------------------Sender Tasks-------------------------------------
+
+void SenderTask_1( void *S )
+{ char SendMessaged[50];
+BaseType_t Status_s;
+/* As per most tasks, this task is implemented within an infinite loop. */
+while (1) {
+	xSemaphoreTake(Semaphores[0] , portMAX_DELAY);
+	sprintf(SendMessaged, "time is %lu", (long unsigned int)xTaskGetTickCount() );
+    Status_s = xQueueSend(messageQueue, &SendMessaged, 0);
+    if (Status_s == pdPASS) //check if queue is full
+    {
+    	//printf("success to send massage from sender_1 \n");
+    	TransmittedCount_1++;
+    }
+    else
+    {
+    	//printf("failed to send massage from sender_1 \n");
+    	BlockedCount_1++;
+    }
+    RandomSample();
+   // printf("T1 %d \n",pdMS_TO_TICKS(RandomTime_1));
+    xTimerChangePeriod(xTimerHandlerSender_1,pdMS_TO_TICKS(RandomTime_1),NULL );
+}
+
+};
+
+void SenderTask_2( void *S )
+{ char SendMessaged[50];
+BaseType_t Status_s;
+
+/* As per most tasks, this task is implemented within an infinite loop. */
+while (1) {
+	xSemaphoreTake(Semaphores[1] , portMAX_DELAY);
+	sprintf(SendMessaged, "time is %lu", (long unsigned int)xTaskGetTickCount() );
+    Status_s = xQueueSend(messageQueue, &SendMessaged, 0);
+    if (Status_s == pdPASS) {
+        //	printf("success to send massage from sender_2 \n");
+        	TransmittedCount_2++;
+        }
+        else
+        {
+        	//printf("failed to send massage from sender_2 \n");
+        	BlockedCount_2++;
+        }
+    RandomSample();
+   // printf("T2 %d \n",RandomTime_2);
+    xTimerChangePeriod(xTimerHandlerSender_2,pdMS_TO_TICKS(RandomTime_2),NULL );
+}
+
+};
+
+void SenderTask_3( void *S )
+{ char SendMessaged[50];
+BaseType_t Status_s;
+
+/* As per most tasks, this task is implemented within an infinite loop. */
+while (1) {
+	xSemaphoreTake(Semaphores[2] , portMAX_DELAY);
+	sprintf(SendMessaged, "time is %lu", (long unsigned int)xTaskGetTickCount() );
+    Status_s = xQueueSend(messageQueue, &SendMessaged, 0);
+    if (Status_s == pdPASS) {
+        	//printf("success to send massage from sender_3 \n");
+        	TransmittedCount_3++;
+        }
+        else
+        {
+        	//printf("failed to send massage from sender_3 \n");
+        	BlockedCount_3++;
+        }
+    RandomSample();
+  // printf("T3 %d \n",RandomTime_3);
+    xTimerChangePeriod(xTimerHandlerSender_3,pdMS_TO_TICKS(RandomTime_3),NULL );
+}
+
+};
+
+// ---------------------------Receiver Task-------------------------------------
+
+void ReceiverTask( void *s )
+{ char RecievedMessaged[50];
+BaseType_t Status_r;
+
+while(1){
+	xSemaphoreTake(Semaphores[3], portMAX_DELAY);
+    Status_r = xQueueReceive( messageQueue, &RecievedMessaged, 0 );
+
+     if (Status_r == pdPASS) {
+        	printf("%s \n",RecievedMessaged );
+        	RecieverCount++;
+        }
+        else
+        {
+         printf("failed to receive massage  \n");
+        }
+     if (RecieverCount==1000)
+            {
+           	 reset();
+            }
+
+   }
+};
+
+/* Timer callback function for Sender_1 Timer */
+
+
+
+//----------------------------Timers Callback----------------------------------
+
+void Sender_1TimerCallback( TimerHandle_t xTimer  ) {
+
+   xSemaphoreGive( Semaphores[0] );
+}
+void Sender_2TimerCallback( TimerHandle_t xTimer  ) {
+
+   xSemaphoreGive( Semaphores[1] );
+}
+void Sender_3TimerCallback(TimerHandle_t xTimer  ) {
+
+   xSemaphoreGive( Semaphores[2] );
+}
+void RecieverTimerCallback(TimerHandle_t xTimer  ) {
+   xSemaphoreGive( Semaphores[3] );
+
+}
+
+
+// -----------------------------Main Function-----------------------------------
+
+
+int main(int argc, char* argv[])
+{
+
+	messageQueue = xQueueCreate(QueueLength , 15 * sizeof(char));
+
+	if(messageQueue != NULL)
+	   {    // Creating the tasks
+	     xTaskCreate(SenderTask_1, "Sender1", configMINIMAL_STACK_SIZE, NULL, SENDER1_PRIORITY, NULL);
+	     xTaskCreate(SenderTask_2, "Sender2", configMINIMAL_STACK_SIZE, NULL, SENDER2_PRIORITY, NULL);
+	     xTaskCreate(SenderTask_3, "Sender3", configMINIMAL_STACK_SIZE, NULL, SENDER3_PRIORITY, NULL);
+	     xTaskCreate(ReceiverTask, "Receiver", configMINIMAL_STACK_SIZE, NULL, RECEIVER_PRIORITY, NULL);
+	   }
+	else
+		printf("Failed to create Queue \n");
+
+//-----------------semaphores--------------------------------------------------
+
+	for (int i = 0; i <4; i++)
+	{
+		Semaphores[i] = NULL;
+	    Semaphores[i] = xSemaphoreCreateBinary();
+
+	   }
+
+//------------------------------timers------------------------------------------
+
+xTimerHandlerSender_1 = xTimerCreate(
+        "Timer1",
+        ( RandomTime_1 ),
+         pdTRUE,
+         NULL,
+         Sender_1TimerCallback);
+xTimerHandlerSender_2 = xTimerCreate(
+        "Timer2",
+        ( RandomTime_2 ),
+         pdTRUE,
+         NULL,
+         Sender_2TimerCallback);
+xTimerHandlerSender_3 = xTimerCreate(
+        "Timer3",
+		( RandomTime_3 ),
+		 pdTRUE,
+		 NULL,
+		 Sender_3TimerCallback);
+xTimerHandlerReciever = xTimerCreate(
+        "RecieverTimer",
+		( RecieverWait ),
+		 pdTRUE,
+		 NULL,
+		 RecieverTimerCallback);
+
+inti_reset();
+
+if( ( xTimerHandlerSender_1 != NULL ) && ( xTimerHandlerSender_2 != NULL ) && ( xTimerHandlerSender_3 != NULL ) && (xTimerHandlerReciever != NULL ) && messageQueue != NULL )
+	{
+		xTimer1Started = xTimerStart( xTimerHandlerSender_1, 0 );
+		xTimer2Started = xTimerStart( xTimerHandlerSender_2, 0 );
+		xTimer3Started = xTimerStart( xTimerHandlerSender_3, 0 );
+		xTimer4Started = xTimerStart( xTimerHandlerReciever, 0 );
+	}
+
+//------------------------------------------------------------------------------
+
+if( xTimer1Started == pdPASS && xTimer2Started == pdPASS && xTimer3Started == pdPASS && xTimer4Started == pdPASS)
+	{
+		vTaskStartScheduler();
+	}
+	else
+	{
+		printf("Failed to Start Task Scheduler \n");
+		exit(0);
+	}
+
+	return 0;
+
+
+    vTaskStartScheduler();
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//-----------------Stack and other necessarily Definitions----------------------
+void vApplicationMallocFailedHook( void )
+{
+	/* Called if a call to pvPortMalloc() fails because there is insufficient
+	free memory available in the FreeRTOS heap.  pvPortMalloc() is called
+	internally by FreeRTOS API functions that create tasks, queues, software
+	timers, and semaphores.  The size of the FreeRTOS heap is set by the
+	configTOTAL_HEAP_SIZE configuration constant in FreeRTOSConfig.h. */
+	for( ;; );
+}
+
+
+void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
+{
+	( void ) pcTaskName;
+	( void ) pxTask;
+
+	/* Run time stack overflow checking is performed if
+	configconfigCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2.  This hook
+	function is called if a stack overflow is detected. */
+	for( ;; );
+}
+
+void vApplicationIdleHook( void )
+{
+volatile size_t xFreeStackSpace;
+
+	/* This function is called on each cycle of the idle task.  In this case it
+	does nothing useful, other than report the amout of FreeRTOS heap that
+	remains unallocated. */
+	xFreeStackSpace = xPortGetFreeHeapSize();
+
+	if( xFreeStackSpace > 100 )
+	{
+		/* By now, the kernel has allocated everything it is going to, so
+		if there is a lot of heap remaining unallocated then
+		the value of configTOTAL_HEAP_SIZE in FreeRTOSConfig.h can be
+		reduced accordingly. */
+	}
+}
+void vApplicationTickHook(void) {
+}
+
+StaticTask_t xIdleTaskTCB CCM_RAM;
+StackType_t uxIdleTaskStack[configMINIMAL_STACK_SIZE] CCM_RAM;
+
+void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize) {
+  /* Pass out a pointer to the StaticTask_t structure in which the Idle task's
+  state will be stored. */
+  *ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
+
+  /* Pass out the array that will be used as the Idle task's stack. */
+  *ppxIdleTaskStackBuffer = uxIdleTaskStack;
+
+  /* Pass out the size of the array pointed to by *ppxIdleTaskStackBuffer.
+  Note that, as the array is necessarily of type StackType_t,
+  configMINIMAL_STACK_SIZE is specified in words, not bytes. */
+  *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
+}
+
+static StaticTask_t xTimerTaskTCB CCM_RAM;
+static StackType_t uxTimerTaskStack[configTIMER_TASK_STACK_DEPTH] CCM_RAM;
+
+/* configUSE_STATIC_ALLOCATION and configUSE_TIMERS are both set to 1, so the
+application must provide an implementation of vApplicationGetTimerTaskMemory()
+to provide the memory that is used by the Timer service task. */
+void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize) {
+  *ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
+  *ppxTimerTaskStackBuffer = uxTimerTaskStack;
+  *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
+}
+
+
